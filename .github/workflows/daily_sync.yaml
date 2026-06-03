@@ -2,12 +2,14 @@ name: Daily JKT48 Sync
 
 on:
   schedule:
-    # Runs at 17:00 UTC (00:00 WIB) every day
     - cron: '0 17 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   sync-and-deploy:
@@ -26,13 +28,14 @@ jobs:
         run: pip install requests psycopg2-binary python-dotenv
 
       - name: Run unified sync and export script
-        run: python main.py
+        run: python daily_sync.py
         env:
           NEON_DB_URL: ${{ secrets.NEON_DB_URL }}
 
       - name: Check for modified files
         id: check_changes
         run: |
+          set -e
           if [ -n "$(git status --porcelain)" ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
           else
@@ -42,29 +45,69 @@ jobs:
       - name: Commit and push if changes exist
         if: steps.check_changes.outputs.has_changes == 'true'
         run: |
+          set -e
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add api/
+          git add api/ || true
           git commit -m "chore: daily data sync and static API update"
           git push
 
       - name: Discord Notification - Data Updated
         if: steps.check_changes.outputs.has_changes == 'true' && success()
         run: |
-          curl -H "Content-Type: application/json" \
-          -d '{"content": "✅ **Success:** New schedule data synced and static API updated on GitHub Pages!"}' \
-          ${{ secrets.DISCORD_SUCCESS_WEBHOOK }}
+          cat <<EOF > payload.json
+          {
+            "embeds": [{
+              "title": "✅ Post-daily run summary",
+              "description": "Workflow **Daily JKT48 Sync** finished.\nNew schedule data synced and pushed to GitHub Pages.",
+              "color": 3066993,
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "fields": [
+                { "name": "Repository", "value": "${{ github.repository }}", "inline": true },
+                { "name": "Branch", "value": "${{ github.ref_name }}", "inline": true },
+                { "name": "Actor", "value": "${{ github.actor }}", "inline": true }
+              ]
+            }]
+          }
+          EOF
+          curl -H "Content-Type: application/json" -d @payload.json ${{ secrets.DISCORD_SUCCESS_WEBHOOK }}
 
       - name: Discord Notification - No Changes
         if: steps.check_changes.outputs.has_changes == 'false' && success()
         run: |
-          curl -H "Content-Type: application/json" \
-          -d '{"content": "ℹ️ **Info:** Sync ran successfully. No new schedule updates found."}' \
-          ${{ secrets.DISCORD_SUCCESS_WEBHOOK }}
+          cat <<EOF > payload.json
+          {
+            "embeds": [{
+              "title": "ℹ️ Post-daily run summary",
+              "description": "Workflow **Daily JKT48 Sync** finished.\nSync ran successfully, but there was no new data to update.",
+              "color": 8421504,
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "fields": [
+                { "name": "Repository", "value": "${{ github.repository }}", "inline": true },
+                { "name": "Branch", "value": "${{ github.ref_name }}", "inline": true },
+                { "name": "Actor", "value": "${{ github.actor }}", "inline": true }
+              ]
+            }]
+          }
+          EOF
+          curl -H "Content-Type: application/json" -d @payload.json ${{ secrets.DISCORD_SUCCESS_WEBHOOK }}
 
       - name: Discord Notification - Failure
         if: failure()
         run: |
-          curl -H "Content-Type: application/json" \
-          -d '{"content": "🚨 **ERROR:** The Daily Sync workflow failed! Check the GitHub Actions logs."}' \
-          ${{ secrets.DISCORD_FAIL_WEBHOOK }}
+          cat <<EOF > payload.json
+          {
+            "embeds": [{
+              "title": "🚨 Post-daily run summary",
+              "description": "Workflow **Daily JKT48 Sync** failed.\nCheck the GitHub Actions logs for details.",
+              "color": 15158332,
+              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "fields": [
+                { "name": "Repository", "value": "${{ github.repository }}", "inline": true },
+                { "name": "Branch", "value": "${{ github.ref_name }}", "inline": true },
+                { "name": "Actor", "value": "${{ github.actor }}", "inline": true }
+              ]
+            }]
+          }
+          EOF
+          curl -H "Content-Type: application/json" -d @payload.json ${{ secrets.DISCORD_FAIL_WEBHOOK }}
