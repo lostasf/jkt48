@@ -10,6 +10,10 @@ To be the "backend" for jkt48-theatre-recap-ext (On progress)
   2. type == "EVENT" && is_in_theater == true
 - The data are then grouped based on the month that they are in (**the format is YYYY-mm**).
 
+### How to use
+`fetch` the data from `https://lostasf.github.io/jkt48/api/data/schedules/{YYYY-MM}.json`. 
+Example: `https://lostasf.github.io/jkt48/api/data/schedules/2026-04.json`
+
 ### Data Structure
 ```
 {
@@ -48,6 +52,3 @@ Table explaining what the data means:
 | schedules | 1772730000                                               | date                                           |
 | schedules | "E"                                                      | "E" -> type == "EVENT" - "S" -> type == "SHOW" |
 | schedules | [17,26,48,59,64,67,91,94,97,115,120,127,148,159,161,166] | Array of member_id's                           |
-
-### How to use
-`fetch` the data from `https://lostasf.github.io/jkt48/api/data/schedules/{YYYY-MM}.json`. Example `https://lostasf.github.io/jkt48/api/data/schedules/2026-04.json`
