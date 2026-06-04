@@ -1,20 +1,20 @@
 # JKT48 Daily Schedule Retrieval
 Retrieve JKT48 schedules daily and compress it into a .json file and serve it into github pages.
 
-### Purpose
+## Purpose
 To be the "backend" for jkt48-theatre-recap-ext (On progress)
 
-### Data Scope
+## Data Scope
 - JKT48 schedules are scraped only if:
-  1. type == "SHOW"
-  2. type == "EVENT" && is_in_theater == true
+  1. `type == "SHOW"`
+  2. `type == "EVENT" && is_in_theater == true`
 - The data are then grouped based on the month that they are in (**the format is YYYY-mm**).
 
-### How to use
-`fetch` the data from `https://lostasf.github.io/jkt48/api/data/schedules/{YYYY-MM}.json`. 
-Example: `https://lostasf.github.io/jkt48/api/data/schedules/2026-04.json`
+## How to use
+`fetch` the data from `https://lostasf.github.io/jkt48/api/data/schedules/{YYYY-MM}.json`.  
+**Example:** [https://lostasf.github.io/jkt48/api/data/schedules/2026-04.json](https://lostasf.github.io/jkt48/api/data/schedules/2026-04.json)
 
-### Data Structure
+## Data Structure
 ```
 {
   "members": {
@@ -52,3 +52,9 @@ Table explaining what the data means:
 | schedules | 1772730000                                               | date                                           |
 | schedules | "E"                                                      | "E" -> type == "EVENT" - "S" -> type == "SHOW" |
 | schedules | [17,26,48,59,64,67,91,94,97,115,120,127,148,159,161,166] | Array of member_id's                           |
+
+### Known limitations
+- Sometimes there's data in `schedules` with `type == "EVENT" && is_in_theater == true`, even though it definitely was **NOT** an event in theatre[^1].
+- Currently the data only goes back to 2023, anything before that may or may not be added.
+
+[^1]: Example: [JKT48 OFC Event “JKT48 Psychology Project: Team Love](https://jkt48.com/purchase/schedule/event?code=OEV-519) - [https://lostasf.github.io/jkt48/api/data/schedules/2026-04.json](https://lostasf.github.io/jkt48/api/data/schedules/2026-04.json)
