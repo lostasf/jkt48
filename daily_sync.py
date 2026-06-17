@@ -39,37 +39,62 @@ def sync_data(data, schedule_type):
                 """
                 INSERT INTO shows (schedule_id, reference_code, title, show_date, event_type)
                 VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (schedule_id) DO NOTHING
+                ON CONFLICT (schedule_id) DO UPDATE
+                SET title = EXCLUDED.title,
+                    show_date = EXCLUDED.show_date,
+                    event_type = EXCLUDED.event_type
+                WHERE shows.title IS DISTINCT FROM EXCLUDED.title
+                   OR shows.show_date IS DISTINCT FROM EXCLUDED.show_date
+                   OR shows.event_type IS DISTINCT FROM EXCLUDED.event_type
+                RETURNING schedule_id
                 """,
                 (schedule_id, data["code"], data["title"], data["date"], schedule_type)
             )
-            
+
             if cur.rowcount > 0:
                 has_changes = True
-            
-            for member in data.get("jkt48_member", []):
-                cur.execute(
-                    """
-                    INSERT INTO members (member_id, name, jkt48_member_type)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (member_id) DO NOTHING
-                    """,
-                    (member["member_id"], member["name"], member["type"])
-                )
-                
-                cur.execute(
-                    """
-                    INSERT INTO show_members (schedule_id, member_id)
-                    VALUES (%s, %s)
-                    ON CONFLICT (schedule_id, member_id) DO NOTHING
-                    """,
-                    (schedule_id, member["member_id"])
-                )
-                
-                if cur.rowcount > 0:
-                    has_changes = True
+
+            new_members = data.get("jkt48_member", [])
+            new_member_ids = {m["member_id"] for m in new_members}
+
+            cur.execute(
+                "SELECT member_id FROM show_members WHERE schedule_id = %s",
+                (schedule_id,)
+            )
+            existing_member_ids = {row[0] for row in cur.fetchall()}
+
+            if new_member_ids != existing_member_ids:
+                has_changes = True
+
+                if existing_member_ids:
+                    cur.execute(
+                        "DELETE FROM show_members WHERE schedule_id = %s",
+                        (schedule_id,)
+                    )
+
+                for member in new_members:
+                    cur.execute(
+                        """
+                        INSERT INTO members (member_id, name, jkt48_member_type)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (member_id) DO UPDATE
+                        SET name = EXCLUDED.name,
+                            jkt48_member_type = EXCLUDED.jkt48_member_type
+                        WHERE members.name IS DISTINCT FROM EXCLUDED.name
+                           OR members.jkt48_member_type IS DISTINCT FROM EXCLUDED.jkt48_member_type
+                        """,
+                        (member["member_id"], member["name"], member["type"])
+                    )
+
+                    cur.execute(
+                        """
+                        INSERT INTO show_members (schedule_id, member_id)
+                        VALUES (%s, %s)
+                        """,
+                        (schedule_id, member["member_id"])
+                    )
         conn.commit()
-        
+
     return has_changes
 
 def run_daily_sync(year, month):
