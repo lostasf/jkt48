@@ -9,8 +9,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+discord_logs = []
+new_counts = defaultdict(int)
+
 def get_db_connection():
     return psycopg2.connect(os.environ.get("NEON_DB_URL"))
+
+def send_discord_message(content):
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    payload = {"content": content}
+    try:
+        requests.post(webhook_url, json=payload)
+        time.sleep(1)
+    except Exception:
+        pass
 
 def fetch_monthly_schedule(year, month, schedule_type):
     url = f"https://jkt48.com/api/v1/schedules?lang=id&month={month}&year={year}&type={schedule_type}"
@@ -33,8 +47,54 @@ def sync_data(data, schedule_type):
     schedule_id = data.get("event_id") if schedule_type == "EVENT" else data.get("theater_show_id")
     has_changes = False
 
+    new_title = data["title"]
+    new_date_str = data["date"]
+    new_members = data.get("jkt48_member", [])
+    new_member_ids = {m["member_id"] for m in new_members}
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT title, show_date, event_type FROM shows WHERE schedule_id = %s",
+                (schedule_id,)
+            )
+            existing_show = cur.fetchone()
+
+            cur.execute(
+                "SELECT member_id FROM show_members WHERE schedule_id = %s",
+                (schedule_id,)
+            )
+            existing_member_ids = {row[0] for row in cur.fetchall()}
+
+            if not existing_show:
+                dt = datetime.fromisoformat(new_date_str.replace("Z", "+00:00"))
+                month_key = dt.strftime("%Y-%m")
+                new_counts[month_key] += 1
+                has_changes = True
+            else:
+                changes = []
+                old_title = existing_show[0]
+                old_date = existing_show[1].isoformat() if hasattr(existing_show[1], 'isoformat') else str(existing_show[1])
+                
+                if old_title != new_title:
+                    changes.append(f"Title: `{old_title}` -> `{new_title}`")
+                
+                if str(old_date) != str(new_date_str):
+                    changes.append(f"Date: `{old_date}` -> `{new_date_str}`")
+
+                if existing_member_ids != new_member_ids:
+                    added = new_member_ids - existing_member_ids
+                    removed = existing_member_ids - new_member_ids
+                    if added:
+                        changes.append(f"Members Added (IDs): {added}")
+                    if removed:
+                        changes.append(f"Members Removed (IDs): {removed}")
+
+                if changes:
+                    has_changes = True
+                    log_msg = f"**[UPDATE] {schedule_type} {data['code']} ({new_title})**\n" + "\n".join(f"- {c}" for c in changes)
+                    discord_logs.append(log_msg)
+
             cur.execute(
                 """
                 INSERT INTO shows (schedule_id, reference_code, title, show_date, event_type)
@@ -43,29 +103,11 @@ def sync_data(data, schedule_type):
                 SET title = EXCLUDED.title,
                     show_date = EXCLUDED.show_date,
                     event_type = EXCLUDED.event_type
-                WHERE shows.title IS DISTINCT FROM EXCLUDED.title
-                   OR shows.show_date IS DISTINCT FROM EXCLUDED.show_date
-                   OR shows.event_type IS DISTINCT FROM EXCLUDED.event_type
-                RETURNING schedule_id
                 """,
-                (schedule_id, data["code"], data["title"], data["date"], schedule_type)
+                (schedule_id, data["code"], new_title, new_date_str, schedule_type)
             )
 
-            if cur.rowcount > 0:
-                has_changes = True
-
-            new_members = data.get("jkt48_member", [])
-            new_member_ids = {m["member_id"] for m in new_members}
-
-            cur.execute(
-                "SELECT member_id FROM show_members WHERE schedule_id = %s",
-                (schedule_id,)
-            )
-            existing_member_ids = {row[0] for row in cur.fetchall()}
-
-            if new_member_ids != existing_member_ids:
-                has_changes = True
-
+            if existing_member_ids != new_member_ids:
                 if existing_member_ids:
                     cur.execute(
                         "DELETE FROM show_members WHERE schedule_id = %s",
@@ -80,8 +122,6 @@ def sync_data(data, schedule_type):
                         ON CONFLICT (member_id) DO UPDATE
                         SET name = EXCLUDED.name,
                             jkt48_member_type = EXCLUDED.jkt48_member_type
-                        WHERE members.name IS DISTINCT FROM EXCLUDED.name
-                           OR members.jkt48_member_type IS DISTINCT FROM EXCLUDED.jkt48_member_type
                         """,
                         (member["member_id"], member["name"], member["type"])
                     )
@@ -121,10 +161,10 @@ def run_daily_sync(year, month):
     return changes_detected
 
 def export_to_static_api():
-    output_dir = os.path.join("api", "data", "schedules")
+    output_dir = os.path.join("api", "schedules")
     os.makedirs(output_dir, exist_ok=True)
 
-    grouped_data = defaultdict(lambda: {"members": {}, "schedules": []})
+    grouped_data = defaultdict(list)
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -136,11 +176,9 @@ def export_to_static_api():
                     s.show_date, 
                     COALESCE(s.event_type, 'SHOW') as event_type,
                     COALESCE(
-                        json_agg(
-                            json_build_object('member_id', m.member_id, 'name', m.name)
-                        ) FILTER (WHERE m.member_id IS NOT NULL), 
+                        json_agg(m.member_id) FILTER (WHERE m.member_id IS NOT NULL), 
                         '[]'
-                    ) as lineup
+                    ) as member_ids
                 FROM shows s
                 LEFT JOIN show_members sm ON s.schedule_id = sm.schedule_id
                 LEFT JOIN members m ON sm.member_id = m.member_id
@@ -152,24 +190,12 @@ def export_to_static_api():
             rows = cur.fetchall()
 
     for row in rows:
-        schedule_id = row[0]
-        ref_code = row[1]
-        title = row[2]
-        show_date = row[3]
-        event_type = row[4]
-        lineup = row[5]
+        schedule_id, ref_code, title, show_date, event_type, member_ids = row
 
         year_month = show_date.strftime("%Y-%m")
         timestamp = int(show_date.timestamp())
-        
         type_flag = "E" if event_type == "EVENT" else "S"
         
-        member_ids = []
-        for m in lineup:
-            member_id_str = str(m["member_id"])
-            grouped_data[year_month]["members"][member_id_str] = m["name"]
-            member_ids.append(m["member_id"])
-            
         schedule_tuple = [
             schedule_id,
             ref_code,
@@ -179,18 +205,25 @@ def export_to_static_api():
             member_ids
         ]
         
-        grouped_data[year_month]["schedules"].append(schedule_tuple)
+        grouped_data[year_month].append(schedule_tuple)
 
     for ym, payload in grouped_data.items():
         filepath = os.path.join(output_dir, f"{ym}.json")
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(payload, f, separators=(",", ":"))
+            json.dump({"schedules": payload}, f, separators=(",", ":"))
         print(f"Generated {filepath}")
 
 if __name__ == "__main__":
     now = datetime.now()
     
     has_updates = run_daily_sync(now.year, now.month)
+    
+    if new_counts:
+        summary = "\n".join(f"- {ym}: {count} new schedules" for ym, count in new_counts.items())
+        send_discord_message(f"**[NEW DATA]** Schedules added this sync:\n{summary}")
+        
+    for log in discord_logs:
+        send_discord_message(log)
     
     if has_updates:
         print("Changes detected. Regenerating static API...")
